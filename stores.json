@@ -1,0 +1,88 @@
+import pandas as pd
+import requests
+import json
+import time
+
+# 配置
+AMAP_API_KEY = "2348899cf4c6d5fc2932f94d2e081342"
+EXCEL_URL = "https://raw.githubusercontent.com/chenpishe/STORE/3e88cae75f17635debbd7e1864c49bc3f9feed4d/stores.xlsx"
+OUTPUT_JSON = "stores.json"
+
+# 提取区域
+def extract_district(address):
+    if not isinstance(address, str):
+        return "其他"
+    districts = ["鄞州区", "海曙区", "江北区", "奉化区", "慈溪市", "余姚市", "北仑区", "镇海区", "杭州湾新区"]
+    for district in districts:
+        if district in address:
+            return district
+    return "其他"
+
+# 获取高德坐标
+def get_coordinates(address, retries=3):
+    if not isinstance(address, str) or not address.strip():
+        return None
+    url = "https://restapi.amap.com/v3/geocode/geo"
+    params = {
+        "key": AMAP_API_KEY,
+        "address": "浙江省" + address,
+        "output": "json"
+    }
+    for i in range(retries):
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data['status'] == '1' and data['geocodes']:
+                    location = data['geocodes'][0]['location']
+                    return {"lat": float(location.split(',')[1]), "lng": float(location.split(',')[0])}
+                elif data['status'] == '0':
+                    print(f"API error for {address}: {data['info']}")
+                    return None
+            else:
+                print(f"HTTP error {response.status_code} for {address}")
+        except Exception as e:
+            print(f"Request failed for {address} (attempt {i+1}/{retries}): {str(e)}")
+        time.sleep(1)
+    return None
+
+# 主逻辑
+def generate_stores_json():
+    # 读取 Excel
+    try:
+        df = pd.read_excel(EXCEL_URL)
+    except Exception as e:
+        print(f"Failed to read Excel: {str(e)}")
+        return
+
+    # 验证列
+    expected_columns = ["门店名称", "门店ID", "门店地址", "首营时间", "完成订单量"]
+    if not all(col in df.columns for col in expected_columns):
+        print("Excel columns do not match expected format")
+        return
+
+    # 处理数据
+    df["区域"] = df["门店地址"].apply(extract_district)
+    print("Fetching coordinates...")
+    df["坐标"] = df["门店地址"].apply(get_coordinates)
+
+    # 过滤无效坐标
+    valid_df = df.dropna(subset=["坐标"])
+    invalid_addresses = df[df["坐标"].isnull()]["门店地址"].tolist()
+    if invalid_addresses:
+        print(f"Found {len(invalid_addresses)} unparsed addresses: {invalid_addresses}")
+
+    # 提取字段
+    valid_df["lat"] = valid_df["坐标"].apply(lambda x: x["lat"])
+    valid_df["lng"] = valid_df["坐标"].apply(lambda x: x["lng"])
+    result_df = valid_df[["门店名称", "门店ID", "完成订单量", "区域", "lat", "lng"]]
+
+    # 保存 JSON
+    stores_data = result_df.to_dict('records')
+    with open(OUTPUT_JSON, 'w', encoding='utf-8') as f:
+        json.dump(stores_data, f, ensure_ascii=False, indent=2)
+    print(f"Saved {len(stores_data)} records to {OUTPUT_JSON}")
+    return stores_data
+
+if __name__ == "__main__":
+    stores_data = generate_stores_json()
